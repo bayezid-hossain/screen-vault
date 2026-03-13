@@ -11,8 +11,14 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Core brand colors
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
         primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
           50: "#f0f4ff",
           100: "#dbe4ff",
           200: "#bac8ff",
@@ -24,7 +30,35 @@ const config: Config = {
           800: "#3b5bdb",
           900: "#364fc7",
         },
-        // Dark theme surfaces
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+        },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+          green: "#51cf66",
+          red: "#ff6b6b",
+          amber: "#ffd43b",
+          cyan: "#66d9e8",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+        // Dark theme surfaces (existing)
         surface: {
           50: "#f8f9fa",
           100: "#f1f3f5",
@@ -34,13 +68,6 @@ const config: Config = {
           800: "#141517",
           900: "#101113",
           950: "#0a0a0c",
-        },
-        // Accent for actions
-        accent: {
-          green: "#51cf66",
-          red: "#ff6b6b",
-          amber: "#ffd43b",
-          cyan: "#66d9e8",
         },
       },
       fontFamily: {

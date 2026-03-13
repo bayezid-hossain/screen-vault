@@ -1,18 +1,19 @@
 import { Tabs } from "expo-router";
 import { View, Text } from "react-native";
-import { Inbox, FolderOpen, BarChart3 } from "lucide-react-native";
+import { Inbox, FolderOpen, BarChart3, Settings } from "lucide-react-native";
 import { useAppStore } from "@/lib/store";
 
 export default function TabLayout() {
-  const unprocessedCount = useAppStore((s) => s.unprocessedCount);
+  const { theme, unprocessedCount } = useAppStore();
+  const isDark = theme === "dark";
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: "#141517",
-          borderTopColor: "#1a1b1e",
+          backgroundColor: isDark ? "#101113" : "#ffffff",
+          borderTopColor: isDark ? "#1a1b1e" : "#f1f3f5",
           borderTopWidth: 1,
           paddingBottom: 8,
           paddingTop: 8,
@@ -20,7 +21,7 @@ export default function TabLayout() {
           elevation: 0,
         },
         tabBarActiveTintColor: "#5c7cfa",
-        tabBarInactiveTintColor: "#868e96",
+        tabBarInactiveTintColor: isDark ? "#868e96" : "#adb5bd",
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "600",
@@ -74,6 +75,15 @@ export default function TabLayout() {
           title: "Stats",
           tabBarIcon: ({ color, size }) => (
             <BarChart3 size={size} color={color} strokeWidth={2} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: "Settings",
+          tabBarIcon: ({ color, size }) => (
+            <Settings size={size} color={color} strokeWidth={2} />
           ),
         }}
       />

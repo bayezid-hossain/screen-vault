@@ -29,7 +29,7 @@ try {
                 `## [Unreleased]\n\n${versionHeader}`
             );
             fs.writeFileSync(changelogPath, changelog);
-            console.log(`✅ Updated CHANGELOG.md with version v${newVersion}`);
+            //console.log(`✅ Updated CHANGELOG.md with version v${newVersion}`);
         } else {
             console.warn('⚠️ No unreleased changes found in CHANGELOG.md. Proceeding without notes.');
         }
@@ -38,7 +38,7 @@ try {
     // 2. Update app.json
     appJson.expo.version = newVersion;
     fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2) + '\n');
-    console.log(`🚀 Bumped app.json version: ${currentVersion} -> ${newVersion}`);
+    //console.log(`🚀 Bumped app.json version: ${currentVersion} -> ${newVersion}`);
 
     const commands = [
         `git add app.json CHANGELOG.md`,
@@ -49,12 +49,12 @@ try {
     ];
 
     for (const cmd of commands) {
-        console.log(`> ${cmd}`);
+        //console.log(`> ${cmd}`);
         execSync(cmd, { stdio: 'inherit' });
     }
 
-    console.log(`\n✅ Successfully released v${newVersion}!`);
-    console.log(`\n📋 RELEASE NOTES:\n\n${releaseNotes || 'Bug fixes and performance improvements.'}\n`);
+    //console.log(`\n✅ Successfully released v${newVersion}!`);
+    //console.log(`\n📋 RELEASE NOTES:\n\n${releaseNotes || 'Bug fixes and performance improvements.'}\n`);
 
 } catch (error) {
     console.error(`\n❌ Release failed: ${error.message}\n`);

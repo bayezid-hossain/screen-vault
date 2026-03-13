@@ -1,10 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   View,
-  Text,
-  Pressable,
   Dimensions,
+  Pressable,
 } from "react-native";
+import { BottomSheetModal } from "@/components/ui/bottom-sheet-modal";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Icon } from "@/components/ui/icon";
+import { Text } from "@/components/ui/text";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { FlashList } from "@shopify/flash-list";
@@ -33,7 +37,8 @@ import {
   type TagRow,
 } from "@/lib/database";
 import { ScrollView } from "react-native-gesture-handler";
-import { Modal, TextInput } from "react-native";
+import { useAppStore } from "@/lib/store";
+import { useColorScheme } from "nativewind";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const COLUMN_COUNT = 3;
@@ -50,7 +55,12 @@ export default function FolderDetailScreen() {
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [screenshotTags, setScreenshotTags] = useState<Record<number, TagRow[]>>({});
 
+  const { colorScheme } = useColorScheme();
+  const theme = useAppStore((s) => s.theme);
+  const dbRevision = useAppStore((s) => s.databaseRevision);
+  const isDark = theme === "dark";
   const folderId = parseInt(id ?? "0", 10);
+  const isSelectMode = selectedIds.size > 0;
 
   const loadData = useCallback(async () => {
     const [folders, shots, allTags] = await Promise.all([
@@ -71,23 +81,18 @@ export default function FolderDetailScreen() {
     setScreenshotTags(sTags);
   }, [folderId]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  const isSelectMode = selectedIds.size > 0;
-
   const toggleSelect = useCallback((id: number) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData, dbRevision]);
 
   const handleDeleteSelected = useCallback(async () => {
     for (const sid of selectedIds) {
@@ -200,7 +205,7 @@ export default function FolderDetailScreen() {
                 right: 4,
               }}
             >
-              <Heart size={14} color="#ffd43b" fill="#ffd43b" strokeWidth={0} />
+              <Icon as={Heart} className="text-accent-amber" size={14} fill="#ffd43b" strokeWidth={0} />
             </View>
           ) : null}
         </Pressable>
@@ -210,12 +215,17 @@ export default function FolderDetailScreen() {
   );
 
   return (
-    <SafeAreaView className="flex-1 bg-surface-950">
+    <SafeAreaView className="flex-1 bg-white dark:bg-surface-950">
       {/* Header */}
       <View className="px-4 pt-2 pb-3 flex-row items-center gap-3">
-        <Pressable onPress={() => router.back()} className="p-2">
-          <ArrowLeft size={22} color="#fff" strokeWidth={2} />
-        </Pressable>
+        <Button
+          variant="ghost"
+          size="icon"
+          onPress={() => router.back()}
+          className="rounded-full"
+        >
+          <Icon as={ArrowLeft} className="text-foreground" size={22} strokeWidth={2} />
+        </Button>
         <View className="flex-1">
           <View className="flex-row items-center gap-2">
             {folder ? (
@@ -224,41 +234,48 @@ export default function FolderDetailScreen() {
                 style={{ backgroundColor: folder.color }}
               />
             ) : null}
-            <Text className="text-white text-lg font-bold" numberOfLines={1}>
+            <Text className="text-surface-900 dark:text-white text-lg font-bold" numberOfLines={1}>
               {folder?.name ?? "Folder"}
             </Text>
           </View>
-          <Text className="text-surface-300 text-xs mt-0.5">
+          <Text className="text-surface-600 dark:text-surface-300 text-xs mt-0.5">
             {screenshots.length} screenshot{screenshots.length !== 1 ? "s" : ""}
           </Text>
         </View>
 
         {isSelectMode ? (
-          <View className="flex-row items-center gap-2">
-            <Pressable
+          <View className="flex-row items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
               onPress={() => setShowTagPicker(true)}
-              className="p-2 bg-primary-900/15 rounded-lg"
+              className="bg-primary-900/10 dark:bg-primary-900/20"
             >
-              <Tags size={18} color="#5c7cfa" strokeWidth={2} />
-            </Pressable>
-            <Pressable
+              <Icon as={Tags} className="text-primary-500" size={18} strokeWidth={2} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onPress={handleFavoriteSelected}
-              className="p-2 bg-accent-amber/15 rounded-lg"
+              className="bg-accent-amber/10 dark:bg-accent-amber/20"
             >
-              <Heart size={18} color="#ffd43b" strokeWidth={2} />
-            </Pressable>
-            <Pressable
+              <Icon as={Heart} className="text-accent-amber" size={18} strokeWidth={2} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onPress={handleDeleteSelected}
-              className="p-2 bg-accent-red/15 rounded-lg"
+              className="bg-accent-red/10 dark:bg-accent-red/20"
             >
-              <Trash2 size={18} color="#ff6b6b" strokeWidth={2} />
-            </Pressable>
-            <Pressable
+              <Icon as={Trash2} className="text-destructive" size={18} strokeWidth={2} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onPress={() => setSelectedIds(new Set())}
-              className="px-2 py-2"
             >
-              <X size={20} color="#868e96" />
-            </Pressable>
+              <Icon as={X} className="text-muted-foreground" size={20} />
+            </Button>
           </View>
         ) : null}
       </View>
@@ -266,7 +283,7 @@ export default function FolderDetailScreen() {
       {/* Gallery Grid */}
       {screenshots.length === 0 ? (
         <View className="flex-1 items-center justify-center">
-          <Text className="text-surface-300 text-base">No screenshots in this folder</Text>
+          <Text className="text-surface-500 dark:text-surface-300 text-base">No screenshots in this folder</Text>
         </View>
       ) : (
         <FlashList
@@ -279,60 +296,51 @@ export default function FolderDetailScreen() {
       )}
 
       {/* Tag Picker Modal */}
-      <Modal visible={showTagPicker} transparent animationType="fade">
-        <Pressable
-          onPress={() => setShowTagPicker(false)}
-          className="flex-1 bg-black/60 items-center justify-center p-6"
-        >
-          <Pressable
-            onPress={(e) => e.stopPropagation()}
-            className="w-full bg-surface-800 rounded-3xl p-6"
-          >
-            <View className="flex-row items-center justify-between mb-4">
-              <Text className="text-white text-xl font-bold">Apply Tags</Text>
-              <Pressable onPress={() => setShowTagPicker(false)}>
-                <X size={22} color="#868e96" />
-              </Pressable>
-            </View>
-            <Text className="text-surface-400 text-sm mb-4">
+      <BottomSheetModal open={showTagPicker} onOpenChange={setShowTagPicker}>
+        <View className="px-6 pt-6 pb-4 flex-row items-center justify-between border-b border-surface-100 dark:border-surface-700">
+          <View>
+            <Text className="text-surface-900 dark:text-white text-xl font-bold">Apply Tags</Text>
+            <Text className="text-surface-600 dark:text-surface-400 text-xs mt-1">
               Applying to {selectedIds.size} screenshots
             </Text>
+          </View>
+        </View>
 
-            <ScrollView className="max-h-64">
-              <View className="flex-row flex-wrap gap-2">
-                {tags.length === 0 ? (
-                  <Text className="text-surface-500 text-center py-4 italic">
-                    No tags available. Create them in the Folders tab.
-                  </Text>
-                ) : (
-                  tags.map((tag) => (
-                    <Pressable
-                      key={tag.id}
-                      onPress={() => handleToggleTag(tag.id)}
-                      className="rounded-full px-4 py-2 border mr-2 mb-2"
-                      style={{
-                        backgroundColor: tag.color + "15",
-                        borderColor: tag.color,
-                      }}
-                    >
-                      <Text style={{ color: tag.color, fontWeight: "600" }}>
-                        {tag.name}
-                      </Text>
-                    </Pressable>
-                  ))
-                )}
-              </View>
-            </ScrollView>
+        <View className="p-6 pb-12">
+          <ScrollView className="max-h-80">
+            <View className="flex-row flex-wrap gap-3">
+              {tags.length === 0 ? (
+                <Text className="text-surface-500 dark:text-surface-400 text-sm italic py-4">No tags created yet.</Text>
+              ) : (
+                tags.map((tag) => (
+                  <Button
+                    key={tag.id}
+                    variant="ghost"
+                    onPress={() => handleToggleTag(tag.id)}
+                    className="rounded-full px-4 py-2 h-auto border"
+                    style={{
+                      backgroundColor: tag.color + "15",
+                      borderColor: tag.color,
+                    }}
+                  >
+                    <Text style={{ color: tag.color, fontWeight: "600" }}>
+                      {tag.name}
+                    </Text>
+                  </Button>
+                ))
+              )}
+            </View>
+          </ScrollView>
 
-            <Pressable
-              onPress={() => setShowTagPicker(false)}
-              className="bg-primary-600 py-3.5 rounded-xl items-center mt-6"
-            >
-              <Text className="text-white font-bold">Done</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+          <Button
+            onPress={() => setShowTagPicker(false)}
+            size="lg"
+            className="rounded-xl py-3.5 h-auto mt-8"
+          >
+            <Text className="text-white font-bold">Done</Text>
+          </Button>
+        </View>
+      </BottomSheetModal>
     </SafeAreaView>
   );
 }

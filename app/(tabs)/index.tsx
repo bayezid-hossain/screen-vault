@@ -1,3 +1,7 @@
+import { BottomSheetModal } from "@/components/ui/bottom-sheet-modal";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
+import { Text } from "@/components/ui/text";
 import {
   assignToFolder,
   getFolders,
@@ -8,22 +12,24 @@ import {
   type FolderRow,
   type ScreenshotRow,
 } from "@/lib/database";
-import { refreshUnprocessedCount, syncScreenshots } from "@/lib/screenshot-monitor";
+import {
+  fullRescan,
+  refreshUnprocessedCount
+} from "@/lib/screenshot-monitor";
 import { useAppStore } from "@/lib/store";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import {
-  FolderInput,
+  FolderInput as FolderIcon,
   Heart,
   RefreshCcw,
   Sparkles,
-  Trash2
+  Trash2,
 } from "lucide-react-native";
 import { useCallback, useEffect, useState } from "react";
 import {
   Dimensions,
-  Pressable,
-  Text,
+  ScrollView,
   View
 } from "react-native";
 import {
@@ -52,8 +58,10 @@ export default function InboxScreen() {
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [lastDeleted, setLastDeleted] = useState<ScreenshotRow | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
   const isImporting = useAppStore((s) => s.isImporting);
-  const lastSyncTimestamp = useAppStore((s) => s.lastSyncTimestamp);
+  const dbRevision = useAppStore((s) => s.databaseRevision);
+  const selectedAlbumName = useAppStore((s) => s.selectedAlbumName);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -62,7 +70,7 @@ export default function InboxScreen() {
         getUnprocessedScreenshots(),
         getFolders(),
       ]);
-      console.log("[Inbox] Loaded", shots.length, "unprocessed screenshots");
+      //console.log("[Inbox] Loaded", shots.length, "unprocessed screenshots");
       setScreenshots(shots);
       setFolders(flds);
       setCurrentIndex(0);
@@ -77,7 +85,7 @@ export default function InboxScreen() {
   // Load on mount AND whenever a sync completes
   useEffect(() => {
     loadData();
-  }, [loadData, lastSyncTimestamp]);
+  }, [loadData, dbRevision]);
 
   const currentScreenshot = screenshots[currentIndex];
 
@@ -129,16 +137,16 @@ export default function InboxScreen() {
   }, [lastDeleted]);
 
   const handleSync = useCallback(async () => {
-    await syncScreenshots();
+    await fullRescan();
     await loadData();
   }, [loadData]);
 
   // Loading state
   if (isLoading && screenshots.length === 0) {
     return (
-      <SafeAreaView className="flex-1 bg-surface-950">
+      <SafeAreaView className="flex-1 bg-white dark:bg-surface-950">
         <View className="flex-1 items-center justify-center px-8">
-          <Text className="text-surface-300 text-lg">
+          <Text className="text-surface-500 dark:text-surface-300 text-lg">
             {isImporting ? "Scanning for screenshots..." : "Loading..."}
           </Text>
         </View>
@@ -149,44 +157,55 @@ export default function InboxScreen() {
   // Empty state
   if (screenshots.length === 0) {
     return (
-      <SafeAreaView className="flex-1 bg-surface-950">
+      <SafeAreaView className="flex-1 bg-white dark:bg-surface-950">
         <View className="flex-1 items-center justify-center px-8">
-          <View className="w-20 h-20 rounded-3xl bg-primary-900/30 items-center justify-center mb-6">
-            <Sparkles size={40} color="#5c7cfa" strokeWidth={1.5} />
+          <View className="w-20 h-20 rounded-3xl bg-primary-100 dark:bg-primary-900/30 items-center justify-center mb-6">
+            <Icon as={Sparkles} className="text-primary-500" size={40} />
           </View>
-          <Text className="text-white text-2xl font-bold text-center mb-2">
+          <Text className="text-black dark:text-white text-2xl font-bold text-center mb-2">
             Inbox Zero! 🎉
           </Text>
-          <Text className="text-surface-300 text-base text-center mb-8">
-            All screenshots have been organized.{"\n"}Take a screenshot to get started.
+          <Text className="text-surface-500 dark:text-surface-300 text-base text-center mb-8">
+            All screenshots have been organized.{"\n"}
+            {selectedAlbumName
+              ? `Source: ${selectedAlbumName}`
+              : "Take a screenshot to get started."}
           </Text>
-          <Pressable
+
+          <Button
             onPress={handleSync}
-            className="bg-primary-700 px-6 py-3 rounded-2xl flex-row items-center gap-2"
+            size="lg"
+            className="rounded-2xl flex-row items-center justify-center gap-2 w-full max-w-xs"
           >
-            <RefreshCcw size={18} color="#fff" strokeWidth={2} />
-            <Text className="text-white font-semibold">
+            <Icon as={RefreshCcw} className="text-white" size={18} strokeWidth={2} />
+            <Text className="text-white font-bold text-base">
               {isImporting ? "Scanning..." : "Scan for Screenshots"}
             </Text>
-          </Pressable>
+          </Button>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-surface-950">
+    <SafeAreaView className="flex-1 bg-white dark:bg-surface-950">
       {/* Header */}
       <View className="px-6 pt-2 pb-4 flex-row items-center justify-between">
         <View>
-          <Text className="text-white text-2xl font-bold">Inbox</Text>
-          <Text className="text-surface-300 text-sm mt-1">
-            {screenshots.length} screenshot{screenshots.length !== 1 ? "s" : ""} to organize
+          <Text className="text-black dark:text-white text-2xl font-bold">Inbox</Text>
+          <Text className="text-surface-500 dark:text-surface-300 text-sm mt-1">
+            {screenshots.length} screenshot{screenshots.length !== 1 ? "s" : ""}{" "}
+            to organize
           </Text>
         </View>
-        <Pressable onPress={handleSync} className="p-2">
-          <RefreshCcw size={20} color="#868e96" strokeWidth={2} />
-        </Pressable>
+        <Button
+          variant="ghost"
+          size="icon"
+          onPress={handleSync}
+          className="rounded-full bg-surface-100 dark:bg-surface-800"
+        >
+          <Icon as={RefreshCcw} className="text-muted-foreground" size={20} strokeWidth={2} />
+        </Button>
       </View>
 
       {/* Card Area */}
@@ -201,82 +220,101 @@ export default function InboxScreen() {
           />
         ) : null}
 
-        {/* Action hints */}
+        {/* Action buttons */}
         <View className="flex-row items-center justify-center gap-8 mt-6">
-          <View className="items-center">
-            <View className="w-12 h-12 rounded-full bg-accent-red/15 items-center justify-center">
-              <Trash2 size={20} color="#ff6b6b" strokeWidth={2} />
+          <Button
+            variant="ghost"
+            onPress={handleDelete}
+            className="items-center flex-col h-auto p-0 active:opacity-60"
+          >
+            <View className="w-12 h-12 rounded-full bg-accent-red/10 dark:bg-accent-red/15 items-center justify-center">
+              <Icon as={Trash2} className="text-destructive" size={20} strokeWidth={2} />
             </View>
-            <Text className="text-surface-300 text-xs mt-2">Delete</Text>
-          </View>
-          <View className="items-center">
-            <View className="w-12 h-12 rounded-full bg-accent-amber/15 items-center justify-center">
-              <Heart size={20} color="#ffd43b" strokeWidth={2} />
+            <Text className="text-muted-foreground text-xs mt-2">Delete</Text>
+          </Button>
+          <Button
+            variant="ghost"
+            onPress={handleFavorite}
+            className="items-center flex-col h-auto p-0 active:opacity-60"
+          >
+            <View className="w-12 h-12 rounded-full bg-accent-amber/10 dark:bg-accent-amber/15 items-center justify-center">
+              <Icon as={Heart} className="text-accent-amber" size={20} strokeWidth={2} />
             </View>
-            <Text className="text-surface-300 text-xs mt-2">Favorite</Text>
-          </View>
-          <View className="items-center">
-            <View className="w-12 h-12 rounded-full bg-accent-green/15 items-center justify-center">
-              <FolderInput size={20} color="#51cf66" strokeWidth={2} />
+            <Text className="text-muted-foreground text-xs mt-2">Favorite</Text>
+          </Button>
+          <Button
+            variant="ghost"
+            onPress={() => setShowFolderPicker(true)}
+            className="items-center flex-col h-auto p-0 active:opacity-60"
+          >
+            <View className="w-12 h-12 rounded-full bg-accent-green/10 dark:bg-accent-green/15 items-center justify-center">
+              <Icon as={FolderIcon} className="text-accent-green" size={20} strokeWidth={2} />
             </View>
-            <Text className="text-surface-300 text-xs mt-2">Organize</Text>
-          </View>
+            <Text className="text-muted-foreground text-xs mt-2">Organize</Text>
+          </Button>
         </View>
       </View>
 
       {/* Undo Toast */}
       {lastDeleted ? (
-        <Pressable
+        <Button
+          variant="outline"
           onPress={handleUndo}
-          className="absolute bottom-24 left-6 right-6 bg-surface-700 rounded-2xl px-4 py-3 flex-row items-center justify-between"
+          className="absolute bottom-24 left-6 right-6 bg-surface-100 dark:bg-surface-700 rounded-2xl px-4 py-3 flex-row items-center justify-between border border-surface-200 dark:border-transparent"
         >
-          <Text className="text-white text-sm">Screenshot deleted</Text>
-          <Text className="text-primary-400 font-semibold text-sm">UNDO</Text>
-        </Pressable>
+          <Text className="text-surface-900 dark:text-white text-sm">Screenshot deleted</Text>
+          <Text className="text-primary-700 dark:text-primary-400 font-bold text-sm">UNDO</Text>
+        </Button>
       ) : null}
 
       {/* Folder Picker Modal */}
-      {showFolderPicker ? (
-        <Pressable
-          onPress={() => setShowFolderPicker(false)}
-          className="absolute inset-0 bg-black/60 justify-end"
-        >
-          <Pressable
-            onPress={(e) => e.stopPropagation()}
-            className="bg-surface-800 rounded-t-3xl px-6 pt-6 pb-10"
-          >
-            <Text className="text-white text-xl font-bold mb-4">
-              Assign to Folder
+      <BottomSheetModal open={showFolderPicker} onOpenChange={setShowFolderPicker}>
+        <View className="p-6 pb-4 flex-row items-center justify-between border-b border-surface-100 dark:border-surface-700">
+          <Text className="text-black dark:text-white text-xl font-bold">
+            Assign to Folder
+          </Text>
+        </View>
+        <View className="px-6 pb-12">
+          {folders.length === 0 ? (
+            <Text className="text-surface-500 dark:text-surface-300 text-center py-10 text-base">
+              No folders yet. Create one in the Folders tab first.
             </Text>
-            {folders.length === 0 ? (
-              <Text className="text-surface-300 text-center py-8">
-                No folders yet. Create one in the Folders tab first.
-              </Text>
-            ) : (
-              folders.map((folder) => (
-                <Pressable
-                  key={folder.id}
-                  onPress={() => handleAssignToFolder(folder.id)}
-                  className="flex-row items-center gap-3 py-3 px-4 rounded-xl active:bg-surface-700"
-                >
-                  <View
-                    className="w-10 h-10 rounded-xl items-center justify-center"
-                    style={{ backgroundColor: folder.color + "25" }}
+          ) : (
+            <ScrollView className="max-h-[60vh] h-full pt-6 gap-y-4">
+              <View className="gap-2 gap-y-4 h-full">
+                {folders.map((folder) => (
+                  <Button
+                    key={folder.id}
+                    variant="ghost"
+                    onPress={() => handleAssignToFolder(folder.id)}
+                    className="flex flex-row items-center justify-center"
                   >
-                    <FolderInput size={20} color={folder.color} strokeWidth={2} />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-white font-semibold">{folder.name}</Text>
-                    <Text className="text-surface-300 text-xs">
-                      {folder.screenshotCount} screenshots
-                    </Text>
-                  </View>
-                </Pressable>
-              ))
-            )}
-          </Pressable>
-        </Pressable>
-      ) : null}
+                    <View
+                      className="rounded-2xl p-2"
+                      style={{ backgroundColor: folder.color + "20" }}
+                    >
+                      <Icon
+                        as={FolderIcon}
+                        color={folder.color}
+                        size={22}
+                        strokeWidth={2}
+                      />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-black dark:text-white font-bold text-base">
+                        {folder.name}
+                      </Text>
+                      <Text className="text-surface-500 dark:text-white/40 text-sm mt-0.5">
+                        {folder.screenshotCount} screenshots
+                      </Text>
+                    </View>
+                  </Button>
+                ))}
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      </BottomSheetModal>
     </SafeAreaView>
   );
 }
@@ -311,17 +349,17 @@ function SwipeCard({
         runOnJS(onSwipeLeft)();
         return;
       }
-      // Swipe right → assign to folder
+      // Swipe right → open folder picker (card stays in place)
       if (event.translationX > SWIPE_THRESHOLD) {
-        translateX.value = withTiming(SCREEN_WIDTH * 1.5, { duration: 300 });
-        scale.value = withTiming(0.8, { duration: 300 });
+        translateX.value = withSpring(0, { damping: 20, stiffness: 200 });
+        translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
         runOnJS(onSwipeRight)();
         return;
       }
-      // Swipe up → favorite
+      // Swipe up → favorite (card stays, moves to next)
       if (event.translationY < -SWIPE_THRESHOLD) {
-        translateY.value = withTiming(-SCREEN_HEIGHT, { duration: 300 });
-        scale.value = withTiming(0.8, { duration: 300 });
+        translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+        translateX.value = withSpring(0, { damping: 20, stiffness: 200 });
         runOnJS(onSwipeUp)();
         return;
       }
@@ -377,6 +415,7 @@ function SwipeCard({
   return (
     <GestureDetector gesture={panGesture}>
       <Animated.View
+        className="bg-surface-900 dark:bg-surface-800"
         style={[
           {
             width: CARD_WIDTH,
@@ -384,7 +423,6 @@ function SwipeCard({
             maxHeight: SCREEN_HEIGHT * 0.55,
             borderRadius: 24,
             overflow: "hidden",
-            backgroundColor: "#1a1b1e",
           },
           animatedStyle,
         ]}
@@ -458,6 +496,7 @@ function SwipeCard({
 
         {/* Bottom info */}
         <View
+          className="bg-black/40"
           style={{
             position: "absolute",
             bottom: 0,
@@ -465,11 +504,11 @@ function SwipeCard({
             right: 0,
             paddingHorizontal: 16,
             paddingBottom: 16,
-            paddingTop: 40,
+            paddingTop: 12,
           }}
         >
           <Text
-            style={{ color: "#fff", fontSize: 12, opacity: 0.8 }}
+            className="text-white opacity-80 text-xs"
             numberOfLines={1}
           >
             {screenshot.filename}

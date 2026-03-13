@@ -24,7 +24,10 @@
       "package": "com.screenvault.app",
       "permissions": [
         "READ_MEDIA_IMAGES",
-        "POST_NOTIFICATIONS"
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "POST_NOTIFICATIONS",
+        "ACCESS_MEDIA_LOCATION"
       ]
     },
     "web": {
@@ -50,7 +53,8 @@
         {
           "photosPermission": "ScreenVault needs access to your photos to organize screenshots.",
           "savePhotosPermission": "ScreenVault needs permission to save edited screenshots.",
-          "isAccessMediaLocationEnabled": true
+          "isAccessMediaLocationEnabled": true,
+          "granularPermissions": ["photo", "video", "audio"]
         }
       ],
       [

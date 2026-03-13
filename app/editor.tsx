@@ -1,4 +1,6 @@
-import { View, Text, Pressable, Dimensions } from "react-native";
+import { View, Dimensions, Pressable } from "react-native";
+import { Button } from "@/components/ui/button";
+import { Text } from "@/components/ui/text";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -86,21 +88,26 @@ export default function EditorScreen() {
     <SafeAreaView className="flex-1 bg-surface-950">
       {/* Header */}
       <View className="px-4 pt-2 pb-3 flex-row items-center justify-between">
-        <Pressable onPress={() => router.back()} className="p-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          onPress={() => router.back()}
+          className="rounded-full"
+        >
           <ArrowLeft size={22} color="#fff" strokeWidth={2} />
-        </Pressable>
+        </Button>
         <Text className="text-white text-lg font-bold">Editor</Text>
-        <Pressable
+        <Button
           onPress={handleSave}
           disabled={isSaving || editedUri === uri}
-          className="bg-primary-600 px-4 py-2 rounded-xl flex-row items-center gap-1.5"
+          className="bg-primary-600 px-4 h-10 rounded-xl flex-row items-center gap-1.5"
           style={{ opacity: editedUri === uri ? 0.5 : 1 }}
         >
           <Save size={16} color="#fff" strokeWidth={2} />
           <Text className="text-white font-semibold text-sm">
             {isSaving ? "Saving..." : "Save"}
           </Text>
-        </Pressable>
+        </Button>
       </View>
 
       {/* Image Preview */}
@@ -139,14 +146,15 @@ function ToolButton({
   onPress: () => void;
 }) {
   return (
-    <Pressable
+    <Button
+      variant="ghost"
       onPress={onPress}
-      className="items-center gap-1.5 active:opacity-60"
+      className="items-center gap-1.5 h-auto p-0"
     >
       <View className="w-14 h-14 rounded-2xl bg-surface-700 items-center justify-center">
         {icon}
       </View>
       <Text className="text-surface-300 text-xs">{label}</Text>
-    </Pressable>
+    </Button>
   );
 }

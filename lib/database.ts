@@ -1,17 +1,42 @@
 import * as SQLite from "expo-sqlite";
 
+type DatabaseChangeListener = () => void;
+const listeners = new Set<DatabaseChangeListener>();
+
+export function addDatabaseChangeListener(listener: DatabaseChangeListener) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function emitChange() {
+  listeners.forEach(l => l());
+}
+
 const DB_NAME = "screenvault.db";
 
-let db: SQLite.SQLiteDatabase | null = null;
+let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
-  if (db) return db;
-  db = await SQLite.openDatabaseAsync(DB_NAME);
-  await initializeDatabase(db);
-  return db;
+  if (dbPromise) return dbPromise;
+
+  dbPromise = (async () => {
+    try {
+      const database = await SQLite.openDatabaseAsync(DB_NAME);
+      await initializeDatabase(database);
+      return database;
+    } catch (error) {
+      dbPromise = null; // Reset on failure
+      throw error;
+    }
+  })();
+
+  return dbPromise;
 }
 
 async function initializeDatabase(database: SQLite.SQLiteDatabase) {
+  //console.log("[Database] Initializing schema...");
   await database.execAsync(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -74,6 +99,7 @@ export async function createFolder(name: string, color?: string, icon?: string) 
     "INSERT INTO folders (name, color, icon, sortOrder) VALUES (?, ?, ?, ?)",
     [name, color ?? "#5c7cfa", icon ?? "folder", sortOrder]
   );
+  emitChange();
   return result.lastInsertRowId;
 }
 
@@ -94,12 +120,14 @@ export async function updateFolder(id: number, data: { name?: string; color?: st
   if (sets.length === 0) return;
   values.push(id);
   await database.runAsync(`UPDATE folders SET ${sets.join(", ")} WHERE id = ?`, values);
+  emitChange();
 }
 
 export async function deleteFolder(id: number) {
   const database = await getDatabase();
   await database.runAsync("UPDATE screenshots SET folderId = NULL, isProcessed = 0 WHERE folderId = ?", [id]);
   await database.runAsync("DELETE FROM folders WHERE id = ?", [id]);
+  emitChange();
 }
 
 // ── Screenshot Operations ──
@@ -112,6 +140,12 @@ export async function importScreenshot(data: {
   height: number;
   createdAt: string;
 }): Promise<number | null> {
+  // Guard against nulls from Native bridge
+  if (!data.mediaLibraryId || !data.uri || !data.filename) {
+    console.warn("[Database] Skipping import: Missing critical asset data", data);
+    return null;
+  }
+
   const database = await getDatabase();
   const existing = await database.getFirstAsync<{ id: number }>(
     "SELECT id FROM screenshots WHERE mediaLibraryId = ?",
@@ -121,8 +155,16 @@ export async function importScreenshot(data: {
 
   const result = await database.runAsync(
     "INSERT INTO screenshots (mediaLibraryId, uri, filename, width, height, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
-    [data.mediaLibraryId, data.uri, data.filename, data.width, data.height, data.createdAt]
+    [
+      data.mediaLibraryId,
+      data.uri,
+      data.filename,
+      data.width || 0,
+      data.height || 0,
+      data.createdAt || new Date().toISOString()
+    ]
   );
+  emitChange();
   return result.lastInsertRowId;
 }
 
@@ -154,6 +196,7 @@ export async function assignToFolder(screenshotId: number, folderId: number) {
     "UPDATE screenshots SET folderId = ?, isProcessed = 1 WHERE id = ?",
     [folderId, screenshotId]
   );
+  emitChange();
 }
 
 export async function toggleFavorite(screenshotId: number) {
@@ -162,6 +205,7 @@ export async function toggleFavorite(screenshotId: number) {
     "UPDATE screenshots SET isFavorite = CASE WHEN isFavorite = 1 THEN 0 ELSE 1 END WHERE id = ?",
     [screenshotId]
   );
+  emitChange();
 }
 
 export async function markAsDeleted(screenshotId: number) {
@@ -170,6 +214,7 @@ export async function markAsDeleted(screenshotId: number) {
     "UPDATE screenshots SET isDeleted = 1 WHERE id = ?",
     [screenshotId]
   );
+  emitChange();
 }
 
 export async function restoreScreenshot(screenshotId: number) {
@@ -178,11 +223,13 @@ export async function restoreScreenshot(screenshotId: number) {
     "UPDATE screenshots SET isDeleted = 0 WHERE id = ?",
     [screenshotId]
   );
+  emitChange();
 }
 
 export async function permanentlyDelete(screenshotId: number) {
   const database = await getDatabase();
   await database.runAsync("DELETE FROM screenshots WHERE id = ?", [screenshotId]);
+  emitChange();
 }
 
 export async function updateScreenshotUri(screenshotId: number, editedUri: string) {
@@ -191,6 +238,7 @@ export async function updateScreenshotUri(screenshotId: number, editedUri: strin
     "UPDATE screenshots SET editedUri = ? WHERE id = ?",
     [editedUri, screenshotId]
   );
+  emitChange();
 }
 
 // ── Tag Operations ──
@@ -201,6 +249,7 @@ export async function createTag(name: string, color: string = "#748ffc") {
     "INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)",
     [name, color]
   );
+  emitChange();
   return result.lastInsertRowId;
 }
 
@@ -212,6 +261,7 @@ export async function getTags() {
 export async function deleteTag(id: number) {
   const database = await getDatabase();
   await database.runAsync("DELETE FROM tags WHERE id = ?", [id]);
+  emitChange();
 }
 
 export async function addTagToScreenshot(screenshotId: number, tagId: number) {
@@ -220,6 +270,7 @@ export async function addTagToScreenshot(screenshotId: number, tagId: number) {
     "INSERT OR IGNORE INTO screenshot_tags (screenshotId, tagId) VALUES (?, ?)",
     [screenshotId, tagId]
   );
+  emitChange();
 }
 
 export async function removeTagFromScreenshot(screenshotId: number, tagId: number) {
@@ -228,6 +279,7 @@ export async function removeTagFromScreenshot(screenshotId: number, tagId: numbe
     "DELETE FROM screenshot_tags WHERE screenshotId = ? AND tagId = ?",
     [screenshotId, tagId]
   );
+  emitChange();
 }
 
 export async function getScreenshotTags(screenshotId: number) {
@@ -276,6 +328,20 @@ export async function getScreenshotsByDate() {
   return database.getAllAsync<{ date: string; count: number }>(
     "SELECT DATE(createdAt) as date, COUNT(*) as count FROM screenshots WHERE isDeleted = 0 GROUP BY DATE(createdAt) ORDER BY date DESC"
   );
+}
+
+/**
+ * Wipe all data (for debugging)
+ */
+export async function clearAllData() {
+  const database = await getDatabase();
+  await database.execAsync(`
+    DELETE FROM screenshot_tags;
+    DELETE FROM tags;
+    DELETE FROM screenshots;
+    DELETE FROM folders;
+  `);
+  //console.log("[Database] All data cleared");
 }
 
 // ── Types ──
