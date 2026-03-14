@@ -4,6 +4,12 @@ All notable changes to ScreenVault will be documented in this file.
 
 ## [Unreleased]
 
+### Fix
+- Path view is the default view now!
+
+### Fix
+- Permissions Changed
+
 ### Added
 - Initial app setup with Expo SDK 54
 - Swipe-to-triage inbox for unprocessed screenshots

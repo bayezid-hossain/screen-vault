@@ -9,10 +9,10 @@ export type ViewType = "grid" | "list" | "swipe" | "path";
 const VIEW_TYPE_KEY = "screenvault_view_type";
 
 const VIEW_OPTIONS: { type: ViewType; Icon: typeof Grid3X3 }[] = [
+  { type: "path", Icon: FolderTree },
   { type: "grid", Icon: Grid3X3 },
   { type: "list", Icon: List },
   { type: "swipe", Icon: Layers },
-  { type: "path", Icon: FolderTree },
 ];
 
 export function ViewTypeSwitcher({
@@ -60,7 +60,7 @@ export async function loadViewType(): Promise<ViewType> {
       return stored;
     }
   } catch { }
-  return "grid";
+  return "path";
 }
 
 export async function saveViewType(type: ViewType): Promise<void> {

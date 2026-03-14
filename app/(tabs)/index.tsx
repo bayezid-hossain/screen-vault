@@ -93,7 +93,7 @@ export default function InboxScreen() {
   const [showFolderPicker, setShowFolderPicker] = useState(false);
   const [lastDeleted, setLastDeleted] = useState<ScreenshotRow | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [viewType, setViewType] = useState<ViewType>("grid");
+  const [viewType, setViewType] = useState<ViewType>("path");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
