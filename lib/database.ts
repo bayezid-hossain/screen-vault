@@ -36,7 +36,7 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 }
 
 async function initializeDatabase(database: SQLite.SQLiteDatabase) {
-  //console.log("[Database] Initializing schema...");
+  // 1. Basic schema initialization
   await database.execAsync(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
@@ -64,7 +64,10 @@ async function initializeDatabase(database: SQLite.SQLiteDatabase) {
       isFavorite INTEGER NOT NULL DEFAULT 0,
       isDeleted INTEGER NOT NULL DEFAULT 0,
       editedUri TEXT,
-      notes TEXT
+      notes TEXT,
+      sourceId TEXT,
+      sourceType TEXT,
+      isSubfolder INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS tags (
@@ -78,12 +81,27 @@ async function initializeDatabase(database: SQLite.SQLiteDatabase) {
       tagId INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
       PRIMARY KEY (screenshotId, tagId)
     );
+  `);
 
+  // 2. Migration for existing installations (must happen before creating indexes on these columns)
+  try {
+    await database.execAsync("ALTER TABLE screenshots ADD COLUMN sourceId TEXT;");
+  } catch (e) {}
+  try {
+    await database.execAsync("ALTER TABLE screenshots ADD COLUMN sourceType TEXT;");
+  } catch (e) {}
+  try {
+    await database.execAsync("ALTER TABLE screenshots ADD COLUMN isSubfolder INTEGER NOT NULL DEFAULT 0;");
+  } catch (e) {}
+
+  // 3. Create indexes (ensuring columns exist)
+  await database.execAsync(`
     CREATE INDEX IF NOT EXISTS idx_screenshots_folder ON screenshots(folderId);
     CREATE INDEX IF NOT EXISTS idx_screenshots_processed ON screenshots(isProcessed);
     CREATE INDEX IF NOT EXISTS idx_screenshots_deleted ON screenshots(isDeleted);
     CREATE INDEX IF NOT EXISTS idx_screenshots_created ON screenshots(createdAt);
     CREATE INDEX IF NOT EXISTS idx_screenshots_media_id ON screenshots(mediaLibraryId);
+    CREATE INDEX IF NOT EXISTS idx_screenshots_source ON screenshots(sourceId);
   `);
 }
 
@@ -132,40 +150,105 @@ export async function deleteFolder(id: number) {
 
 // ── Screenshot Operations ──
 
-export async function importScreenshot(data: {
+export async function importScreenshot(data: ScreenshotImportData): Promise<number | null> {
+  const results = await batchImportScreenshots([data]);
+  return results.length > 0 ? results[0] : null;
+}
+
+export type ScreenshotImportData = {
   mediaLibraryId: string;
   uri: string;
   filename: string;
   width: number;
   height: number;
   createdAt: string;
-}): Promise<number | null> {
-  // Guard against nulls from Native bridge
-  if (!data.mediaLibraryId || !data.uri || !data.filename) {
-    console.warn("[Database] Skipping import: Missing critical asset data", data);
-    return null;
-  }
+  sourceId?: string | null;
+  sourceType?: 'album' | 'folder' | null;
+  isSubfolder?: boolean;
+};
 
+export async function batchImportScreenshots(batch: ScreenshotImportData[]): Promise<number[]> {
+  if (batch.length === 0) return [];
+  
   const database = await getDatabase();
-  const existing = await database.getFirstAsync<{ id: number }>(
-    "SELECT id FROM screenshots WHERE mediaLibraryId = ?",
-    [data.mediaLibraryId]
-  );
-  if (existing) return null; // Already imported, skip
+  const importedIds: number[] = [];
+  
+  try {
+    // Pre-fetch existing records in bulk to avoid per-row SELECT inside the transaction
+    const validBatch = batch.filter(d => d.mediaLibraryId && d.uri && d.filename);
+    if (validBatch.length === 0) return [];
 
-  const result = await database.runAsync(
-    "INSERT INTO screenshots (mediaLibraryId, uri, filename, width, height, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
-    [
-      data.mediaLibraryId,
-      data.uri,
-      data.filename,
-      data.width || 0,
-      data.height || 0,
-      data.createdAt || new Date().toISOString()
-    ]
-  );
-  emitChange();
-  return result.lastInsertRowId;
+    // Query existing mediaLibraryIds in chunks of 500 (SQLite variable limit)
+    const existingMap = new Map<string, { id: number; sourceId: string | null }>();
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < validBatch.length; i += CHUNK_SIZE) {
+      const chunk = validBatch.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = await database.getAllAsync<{ id: number; mediaLibraryId: string; sourceId: string | null }>(
+        `SELECT id, mediaLibraryId, sourceId FROM screenshots WHERE mediaLibraryId IN (${placeholders})`,
+        chunk.map(d => d.mediaLibraryId)
+      );
+      for (const row of rows) {
+        existingMap.set(row.mediaLibraryId, { id: row.id, sourceId: row.sourceId });
+      }
+    }
+
+    // Separate into updates (existing without sourceId) and inserts (new)
+    const toInsert: ScreenshotImportData[] = [];
+    const toUpdate: { id: number; sourceId: string; sourceType: string | null }[] = [];
+
+    for (const data of validBatch) {
+      const existing = existingMap.get(data.mediaLibraryId);
+      if (existing) {
+        if (data.sourceId && !existing.sourceId) {
+          toUpdate.push({ id: existing.id, sourceId: data.sourceId, sourceType: data.sourceType || null });
+        }
+        // Already exists — skip
+      } else {
+        toInsert.push(data);
+      }
+    }
+
+    await database.withTransactionAsync(async () => {
+      // Batch update existing rows that need sourceId
+      for (const upd of toUpdate) {
+        await database.runAsync(
+          "UPDATE screenshots SET sourceId = ?, sourceType = ? WHERE id = ?",
+          [upd.sourceId, upd.sourceType, upd.id]
+        );
+      }
+
+      // Batch insert new rows
+      for (const data of toInsert) {
+        const result = await database.runAsync(
+          "INSERT OR IGNORE INTO screenshots (mediaLibraryId, uri, filename, width, height, createdAt, sourceId, sourceType, isSubfolder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            data.mediaLibraryId,
+            data.uri,
+            data.filename,
+            data.width || 0,
+            data.height || 0,
+            data.createdAt || new Date().toISOString(),
+            data.sourceId || null,
+            data.sourceType || null,
+            data.isSubfolder ? 1 : 0
+          ]
+        );
+
+        if (result.changes > 0) {
+          importedIds.push(result.lastInsertRowId);
+        }
+      }
+    });
+
+    if (importedIds.length > 0 || toUpdate.length > 0) {
+      emitChange();
+    }
+    return importedIds;
+  } catch (error) {
+    console.error("[Database] Error batch importing screenshots:", error);
+    return [];
+  }
 }
 
 export async function getUnprocessedScreenshots() {
@@ -188,6 +271,128 @@ export async function getFavoriteScreenshots() {
   return database.getAllAsync<ScreenshotRow>(
     "SELECT * FROM screenshots WHERE isFavorite = 1 AND isDeleted = 0 ORDER BY createdAt DESC"
   );
+}
+
+export async function getScreenshotsByIds(ids: number[]) {
+  if (ids.length === 0) return [];
+  const database = await getDatabase();
+  const placeholders = ids.map(() => "?").join(",");
+  // Use CASE to maintain the order of IDs provided
+  const ordinals = ids.map((id, index) => `WHEN id = ? THEN ${index}`).join(" ");
+  return database.getAllAsync<ScreenshotRow>(
+    `SELECT * FROM screenshots WHERE id IN (${placeholders}) ORDER BY CASE ${ordinals} END`,
+    [...ids, ...ids]
+  );
+}
+
+export type SearchFilter = "all" | "inbox" | "organized" | "favorited" | "deleted";
+export type SortOption = "newest" | "oldest" | "name_az" | "name_za";
+
+export async function searchScreenshots(options: {
+  query?: string;
+  filter?: SearchFilter;
+  sort?: SortOption;
+  tagId?: number;
+  limit?: number;
+  offset?: number;
+}) {
+  const { query, filter = "all", sort = "newest", tagId, limit = 100, offset = 0 } = options;
+  const database = await getDatabase();
+  
+  let sql = "SELECT s.* FROM screenshots s";
+  const params: any[] = [];
+
+  if (tagId) {
+    sql += " JOIN screenshot_tags st ON st.screenshotId = s.id AND st.tagId = ?";
+    params.push(tagId);
+  }
+
+  sql += " WHERE 1=1";
+  
+  // Apply filter
+  if (filter === "inbox") {
+    sql += " AND s.isProcessed = 0 AND s.isDeleted = 0";
+  } else if (filter === "organized") {
+    sql += " AND s.isProcessed = 1 AND s.isDeleted = 0";
+  } else if (filter === "favorited") {
+    sql += " AND s.isFavorite = 1 AND s.isDeleted = 0";
+  } else if (filter === "deleted") {
+    sql += " AND s.isDeleted = 1";
+  } else {
+    // default "all" - shows non-deleted
+    sql += " AND s.isDeleted = 0";
+  }
+  
+  // Apply text search
+  if (query && query.trim()) {
+    sql += " AND (s.filename LIKE ? OR s.notes LIKE ?)";
+    const wildcard = `%${query.trim()}%`;
+    params.push(wildcard, wildcard);
+  }
+  
+  // Apply sorting
+  switch (sort) {
+    case "oldest":
+      sql += " ORDER BY s.createdAt ASC";
+      break;
+    case "name_az":
+      sql += " ORDER BY s.filename ASC";
+      break;
+    case "name_za":
+      sql += " ORDER BY s.filename DESC";
+      break;
+    case "newest":
+    default:
+      sql += " ORDER BY s.createdAt DESC";
+      break;
+  }
+
+  sql += " LIMIT ? OFFSET ?";
+  params.push(limit, offset);
+  
+  return database.getAllAsync<ScreenshotRow>(sql, params);
+}
+
+export async function getScreenshotCount(options: {
+  query?: string;
+  filter?: SearchFilter;
+  tagId?: number;
+}): Promise<number> {
+  const { query, filter = "all", tagId } = options;
+  const database = await getDatabase();
+  
+  let sql = "SELECT COUNT(*) as count FROM screenshots s";
+  const params: any[] = [];
+
+  if (tagId) {
+    sql += " JOIN screenshot_tags st ON st.screenshotId = s.id AND st.tagId = ?";
+    params.push(tagId);
+  }
+
+  sql += " WHERE 1=1";
+  
+  // Apply filter
+  if (filter === "inbox") {
+    sql += " AND s.isProcessed = 0 AND s.isDeleted = 0";
+  } else if (filter === "organized") {
+    sql += " AND s.isProcessed = 1 AND s.isDeleted = 0";
+  } else if (filter === "favorited") {
+    sql += " AND s.isFavorite = 1 AND s.isDeleted = 0";
+  } else if (filter === "deleted") {
+    sql += " AND s.isDeleted = 1";
+  } else {
+    sql += " AND s.isDeleted = 0";
+  }
+  
+  // Apply text search
+  if (query && query.trim()) {
+    sql += " AND (s.filename LIKE ? OR s.notes LIKE ?)";
+    const wildcard = `%${query.trim()}%`;
+    params.push(wildcard, wildcard);
+  }
+  
+  const result = await database.getFirstAsync<{ count: number }>(sql, params);
+  return result?.count ?? 0;
 }
 
 export async function assignToFolder(screenshotId: number, folderId: number) {
@@ -229,6 +434,67 @@ export async function restoreScreenshot(screenshotId: number) {
 export async function permanentlyDelete(screenshotId: number) {
   const database = await getDatabase();
   await database.runAsync("DELETE FROM screenshots WHERE id = ?", [screenshotId]);
+  emitChange();
+}
+
+export async function deleteScreenshotsBySource(sourceId: string) {
+  const database = await getDatabase();
+  await database.runAsync("DELETE FROM screenshots WHERE sourceId = ?", [sourceId]);
+  emitChange();
+}
+
+export async function deleteSubfolderScreenshots(sourceId: string) {
+  const database = await getDatabase();
+  await database.runAsync(
+    "DELETE FROM screenshots WHERE sourceId = ? AND isSubfolder = 1",
+    [sourceId]
+  );
+  emitChange();
+}
+
+// ── Batch Operations ──
+
+export async function batchAssignToFolder(ids: number[], folderId: number) {
+  if (ids.length === 0) return;
+  const database = await getDatabase();
+  const placeholders = ids.map(() => "?").join(",");
+  await database.runAsync(
+    `UPDATE screenshots SET folderId = ?, isProcessed = 1 WHERE id IN (${placeholders})`,
+    [folderId, ...ids]
+  );
+  emitChange();
+}
+
+export async function batchMarkAsDeleted(ids: number[]) {
+  if (ids.length === 0) return;
+  const database = await getDatabase();
+  const placeholders = ids.map(() => "?").join(",");
+  await database.runAsync(
+    `UPDATE screenshots SET isDeleted = 1 WHERE id IN (${placeholders})`,
+    ids
+  );
+  emitChange();
+}
+
+export async function batchToggleFavorite(ids: number[]) {
+  if (ids.length === 0) return;
+  const database = await getDatabase();
+  const placeholders = ids.map(() => "?").join(",");
+  await database.runAsync(
+    `UPDATE screenshots SET isFavorite = CASE WHEN isFavorite = 1 THEN 0 ELSE 1 END WHERE id IN (${placeholders})`,
+    ids
+  );
+  emitChange();
+}
+
+export async function unorganizeScreenshots(ids: number[]) {
+  if (ids.length === 0) return;
+  const database = await getDatabase();
+  const placeholders = ids.map(() => "?").join(",");
+  await database.runAsync(
+    `UPDATE screenshots SET folderId = NULL, isProcessed = 0 WHERE id IN (${placeholders})`,
+    ids
+  );
   emitChange();
 }
 
@@ -323,6 +589,15 @@ export async function getStats() {
   };
 }
 
+export async function getScreenshotCountBySource(sourceId: string): Promise<number> {
+  const database = await getDatabase();
+  const result = await database.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) as count FROM screenshots WHERE sourceId = ?",
+    [sourceId]
+  );
+  return result?.count ?? 0;
+}
+
 export async function getScreenshotsByDate() {
   const database = await getDatabase();
   return database.getAllAsync<{ date: string; count: number }>(
@@ -330,18 +605,40 @@ export async function getScreenshotsByDate() {
   );
 }
 
-/**
- * Wipe all data (for debugging)
- */
-export async function clearAllData() {
+export type SourceGroup = {
+  sourceId: string;
+  screenshots: ScreenshotRow[];
+};
+
+export async function getScreenshotsGroupedBySource(filter: SearchFilter = 'all', sort: SortOption = 'newest'): Promise<SourceGroup[]> {
   const database = await getDatabase();
-  await database.execAsync(`
-    DELETE FROM screenshot_tags;
-    DELETE FROM tags;
-    DELETE FROM screenshots;
-    DELETE FROM folders;
-  `);
-  //console.log("[Database] All data cleared");
+  
+  let filterSql = 'AND s.isDeleted = 0';
+  if (filter === 'inbox') filterSql = 'AND s.isProcessed = 0 AND s.isDeleted = 0';
+  else if (filter === 'organized') filterSql = 'AND s.isProcessed = 1 AND s.isDeleted = 0';
+  else if (filter === 'favorited') filterSql = 'AND s.isFavorite = 1 AND s.isDeleted = 0';
+  else if (filter === 'deleted') filterSql = 'AND s.isDeleted = 1';
+
+  let orderSql = 'ORDER BY s.createdAt DESC';
+  if (sort === 'oldest') orderSql = 'ORDER BY s.createdAt ASC';
+  else if (sort === 'name_az') orderSql = 'ORDER BY s.filename ASC';
+  else if (sort === 'name_za') orderSql = 'ORDER BY s.filename DESC';
+
+  const rows = await database.getAllAsync<ScreenshotRow>(
+    `SELECT s.* FROM screenshots s WHERE 1=1 ${filterSql} ${orderSql}`
+  );
+
+  const groupMap = new Map<string, ScreenshotRow[]>();
+  for (const row of rows) {
+    const key = row.sourceId || '__unsorted__';
+    if (!groupMap.has(key)) groupMap.set(key, []);
+    groupMap.get(key)!.push(row);
+  }
+
+  return Array.from(groupMap.entries()).map(([sourceId, screenshots]) => ({
+    sourceId,
+    screenshots,
+  }));
 }
 
 // ── Types ──
@@ -371,6 +668,7 @@ export type ScreenshotRow = {
   isDeleted: number;
   editedUri: string | null;
   notes: string | null;
+  sourceId: string | null;
 };
 
 export type TagRow = {

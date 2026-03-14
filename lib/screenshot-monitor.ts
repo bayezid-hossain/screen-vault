@@ -3,7 +3,15 @@ import * as LegacyFileSystem from "expo-file-system/legacy";
 import { StorageAccessFramework } from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
 import * as Notifications from "expo-notifications";
-import { getUnprocessedScreenshots, importScreenshot } from "./database";
+import {
+  batchImportScreenshots,
+  deleteScreenshotsBySource,
+  deleteSubfolderScreenshots,
+  getDatabase,
+  getUnprocessedScreenshots,
+  importScreenshot,
+  type ScreenshotImportData
+} from "./database";
 import { useAppStore } from "./store";
 
 const LAST_SYNC_KEY = "screenvault_last_sync";
@@ -12,6 +20,11 @@ const SELECTED_ALBUM_NAME_KEY = "screenvault_selected_album_name";
 const SELECTED_FOLDER_URI_KEY = "screenvault_selected_folder_uri";
 const SELECTED_FOLDER_NAME_KEY = "screenvault_selected_folder_name";
 const SELECTED_THEME_KEY = "screenvault_selected_theme";
+const MONITOR_SOURCES_KEY = "screenvault_monitor_sources_v2";
+const SCAN_HIDDEN_FOLDERS_KEY = "screenvault_scan_hidden_folders";
+
+// Mutex to prevent concurrent sync operations
+let isSyncing = false;
 
 // Configure notifications
 Notifications.setNotificationHandler({
@@ -30,19 +43,26 @@ Notifications.setNotificationHandler({
  */
 export async function loadPersistedSettings() {
   try {
-    const [albumName, folderUri, folderName, lastSync, theme] = await Promise.all([
-      AsyncStorage.getItem(SELECTED_ALBUM_NAME_KEY),
-      AsyncStorage.getItem(SELECTED_FOLDER_URI_KEY),
-      AsyncStorage.getItem(SELECTED_FOLDER_NAME_KEY),
+    const [sourcesStr, lastSync, theme] = await Promise.all([
+      AsyncStorage.getItem(MONITOR_SOURCES_KEY),
       AsyncStorage.getItem(LAST_SYNC_KEY),
       AsyncStorage.getItem(SELECTED_THEME_KEY),
     ]);
 
-    if (folderUri && folderName) {
-      useAppStore.getState().setSelectedFolderUri(folderUri);
-      useAppStore.getState().setSelectedAlbumName(`📁 ${folderName}`);
-    } else if (albumName) {
-      useAppStore.getState().setSelectedAlbumName(albumName);
+    if (sourcesStr) {
+      useAppStore.getState().setMonitorSources(JSON.parse(sourcesStr));
+    } else {
+      // Migrate old settings if they exist
+      const albumName = await AsyncStorage.getItem(SELECTED_ALBUM_NAME_KEY);
+      const folderUri = await AsyncStorage.getItem(SELECTED_FOLDER_URI_KEY);
+      const folderName = await AsyncStorage.getItem(SELECTED_FOLDER_NAME_KEY);
+      const albumId = await AsyncStorage.getItem(SELECTED_ALBUM_ID_KEY);
+
+      if (folderUri && folderName) {
+        useAppStore.getState().addMonitorSource({ id: null, name: folderName, uri: folderUri, type: "folder" });
+      } else if (albumName) {
+        useAppStore.getState().addMonitorSource({ id: albumId, name: albumName, type: "album" });
+      }
     }
 
     if (lastSync) {
@@ -51,6 +71,11 @@ export async function loadPersistedSettings() {
 
     if (theme === "light" || theme === "dark" || theme === "system") {
       useAppStore.getState().setTheme(theme);
+    }
+
+    const scanHidden = await AsyncStorage.getItem(SCAN_HIDDEN_FOLDERS_KEY);
+    if (scanHidden !== null) {
+      useAppStore.getState().setScanHiddenFolders(scanHidden === "true");
     }
 
     //console.log("[ScreenVault] Persisted settings loaded:", { albumName, folderUri, folderName, theme });
@@ -65,6 +90,14 @@ export async function loadPersistedSettings() {
 export async function saveThemeSetting(theme: "light" | "dark" | "system") {
   await AsyncStorage.setItem(SELECTED_THEME_KEY, theme);
   useAppStore.getState().setTheme(theme);
+}
+
+/**
+ * Save hidden folder scan setting.
+ */
+export async function setScanHiddenFolders(enabled: boolean) {
+  await AsyncStorage.setItem(SCAN_HIDDEN_FOLDERS_KEY, enabled.toString());
+  useAppStore.getState().setScanHiddenFolders(enabled);
 }
 
 /**
@@ -148,27 +181,6 @@ async function findScreenshotsAlbum(): Promise<MediaLibrary.Album | null> {
   return null;
 }
 
-export async function setSelectedAlbum(albumId: string | null, albumName: string | null) {
-  // Clear any SAF folder selection when switching to album mode
-  await AsyncStorage.removeItem(SELECTED_FOLDER_URI_KEY);
-  await AsyncStorage.removeItem(SELECTED_FOLDER_NAME_KEY);
-  useAppStore.getState().setSelectedFolderUri(null);
-
-  if (albumId && albumName) {
-    await AsyncStorage.setItem(SELECTED_ALBUM_ID_KEY, albumId);
-    await AsyncStorage.setItem(SELECTED_ALBUM_NAME_KEY, albumName);
-    useAppStore.getState().setSelectedAlbumName(albumName);
-    //console.log("[ScreenVault] Saved album selection:", albumName);
-  } else {
-    await AsyncStorage.removeItem(SELECTED_ALBUM_ID_KEY);
-    await AsyncStorage.removeItem(SELECTED_ALBUM_NAME_KEY);
-    useAppStore.getState().setSelectedAlbumName(null);
-    //console.log("[ScreenVault] Cleared album selection");
-  }
-  // Force a re-scan with the new setting
-  await syncScreenshots();
-}
-
 /**
  * Open the native SAF folder picker and let the user select any folder on the device.
  * Returns { uri, name } if selected, or null if cancelled.
@@ -176,21 +188,15 @@ export async function setSelectedAlbum(albumId: string | null, albumName: string
 export async function selectDeviceFolder(): Promise<{ uri: string; name: string } | null> {
   try {
     const permissions = await StorageAccessFramework.requestDirectoryPermissionsAsync();
-    if (!permissions.granted) {
-      //console.log("[ScreenVault] SAF folder picker cancelled");
-      return null;
-    }
+    if (!permissions.granted) return null;
+
     const folderUri = permissions.directoryUri;
-    // Extract a human-readable name from the SAF URI
     const decodedUri = decodeURIComponent(folderUri);
-    // SAF URIs look like: content://com.android.externalstorage.documents/tree/primary%3ADCIM%2FScreenshots
-    // After decoding: ...tree/primary:DCIM/Screenshots
     const pathPart = decodedUri.split("/tree/")[1] || decodedUri;
     const colonIndex = pathPart.indexOf(":");
     const displayPath = colonIndex >= 0 ? pathPart.substring(colonIndex + 1) : pathPart;
     const folderName = displayPath || "Selected Folder";
 
-    //console.log("[ScreenVault] SAF folder selected:", folderUri, "display:", folderName);
     return { uri: folderUri, name: folderName };
   } catch (e) {
     console.error("[ScreenVault] SAF folder selection error:", e);
@@ -199,34 +205,143 @@ export async function selectDeviceFolder(): Promise<{ uri: string; name: string 
 }
 
 /**
- * Set the selected SAF folder and trigger a re-scan.
+ * Add a new source to the monitor.
  */
-export async function setSelectedFolder(folderUri: string | null, folderName: string | null) {
-  // Clear album selection when switching to folder mode
-  await AsyncStorage.removeItem(SELECTED_ALBUM_ID_KEY);
-  await AsyncStorage.removeItem(SELECTED_ALBUM_NAME_KEY);
+export async function addMonitorSource(source: import("./store").MonitorSource, skipSync = false) {
+  useAppStore.getState().addMonitorSource(source);
+  const sources = useAppStore.getState().monitorSources;
+  await AsyncStorage.setItem(MONITOR_SOURCES_KEY, JSON.stringify(sources));
 
-  if (folderUri && folderName) {
-    await AsyncStorage.setItem(SELECTED_FOLDER_URI_KEY, folderUri);
-    await AsyncStorage.setItem(SELECTED_FOLDER_NAME_KEY, folderName);
-    useAppStore.getState().setSelectedFolderUri(folderUri);
-    useAppStore.getState().setSelectedAlbumName(`📁 ${folderName}`);
-    //console.log("[ScreenVault] Saved SAF folder selection:", folderName);
-  } else {
-    await AsyncStorage.removeItem(SELECTED_FOLDER_URI_KEY);
-    await AsyncStorage.removeItem(SELECTED_FOLDER_NAME_KEY);
-    useAppStore.getState().setSelectedFolderUri(null);
-    useAppStore.getState().setSelectedAlbumName(null);
-    //console.log("[ScreenVault] Cleared SAF folder selection");
+  if (!skipSync) {
+    await syncScreenshots();
   }
-  // Reset sync state and re-scan
-  await resetSyncState();
-  await syncScreenshots();
+}
+
+/**
+ * Remove a source from the monitor.
+ */
+export async function removeMonitorSource(idOrUri: string) {
+  useAppStore.getState().removeMonitorSource(idOrUri);
+  const sources = useAppStore.getState().monitorSources;
+  await AsyncStorage.setItem(MONITOR_SOURCES_KEY, JSON.stringify(sources));
+  await deleteScreenshotsBySource(idOrUri);
+  await refreshUnprocessedCount();
+}
+
+
+/**
+ * Toggle recursion for a specific monitor source.
+ */
+export async function toggleMonitorSourceRecursion(idOrUri: string, skipSync = false) {
+  const sources = useAppStore.getState().monitorSources;
+  const source = sources.find(s => s.id === idOrUri || s.uri === idOrUri);
+  const wasRecursive = !!source?.recursive;
+  
+  useAppStore.getState().toggleSourceRecursion(idOrUri);
+  const updatedSources = useAppStore.getState().monitorSources;
+  await AsyncStorage.setItem(MONITOR_SOURCES_KEY, JSON.stringify(updatedSources));
+  
+  const updatedSource = updatedSources.find(s => s.id === idOrUri || s.uri === idOrUri);
+  const isNowRecursive = !!updatedSource?.recursive;
+
+  if (wasRecursive && !isNowRecursive) {
+    // Disabled recursion: Clean up all images that were imported from subdirectories of this source
+    // SMART CLEANUP: Only remove if NOT explicitly added as a separate source
+    const otherSources = updatedSources.filter(s => s.uri !== idOrUri);
+    const database = await getDatabase();
+    
+    // Find all screenshots marked as subfolders for this source
+    const subs = await database.getAllAsync<{ mediaLibraryId: string }>(
+      "SELECT mediaLibraryId FROM screenshots WHERE sourceId = ? AND isSubfolder = 1",
+      [idOrUri]
+    );
+
+    for (const sub of subs) {
+      const uri = sub.mediaLibraryId;
+      // Is this URI covered by any other source?
+      const isCovered = otherSources.some(os => {
+        if (!os.uri) return false;
+        if (uri === os.uri) return true; // Exactly the same source
+        if (os.recursive && uri.startsWith(os.uri)) return true; // Covered by another recursive parent
+        return false;
+      });
+
+      if (!isCovered) {
+        await database.runAsync("DELETE FROM screenshots WHERE mediaLibraryId = ?", [uri]);
+      }
+    }
+
+    await refreshUnprocessedCount();
+  } else if (!wasRecursive && isNowRecursive) {
+    // Enabled recursion: Trigger sync to pick up new images
+    if (!skipSync) {
+      await syncScreenshots();
+    }
+  }
+}
+
+/**
+ * Check if a new folder is already covered by an existing source,
+ * or if it would shadow someone else.
+ */
+export function checkSourceOverlap(newUri: string, recursive: boolean): { status: 'overlap' | 'shadow' | 'ok'; message?: string } {
+  const sources = useAppStore.getState().monitorSources;
+  
+  for (const s of sources) {
+    if (!s.uri) continue;
+    
+    // 1. Is the new folder ALREADY inside an existing recursive folder?
+    if (s.recursive && newUri.startsWith(s.uri) && newUri !== s.uri) {
+      return { 
+        status: 'overlap', 
+        message: `This folder is already covered by recursive monitoring of "${s.name}".` 
+      };
+    }
+
+    // 2. Is the new folder a PARENT of an existing folder?
+    if (recursive && s.uri.startsWith(newUri) && newUri !== s.uri) {
+      return {
+        status: 'shadow',
+        message: `Monitoring this folder recursively will overlap with your existing source "${s.name}".`
+      };
+    }
+  }
+
+  return { status: 'ok' };
+}
+
+/**
+ * Previews how many screenshots are in a folder without importing them.
+ */
+export async function previewSAFFolder(
+  uri: string, 
+  recursive: boolean, 
+  onProgress?: (count: number) => void
+): Promise<import("./database").ScreenshotImportData[]> {
+  return await syncFromSAFFolder(uri, new Set<string>(), recursive, true, onProgress);
 }
 
 export async function getAllAlbumsWithAssets(): Promise<MediaLibrary.Album[]> {
   const albums = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
-  return albums.filter(a => a.assetCount > 0).sort((a, b) => b.assetCount - a.assetCount);
+  
+  // To avoid showing folders with only videos, we need to check if they have at least one photo.
+  // This is a bit more expensive than just checking assetCount, so we do it in parallel.
+  const albumsWithPhotos = await Promise.all(
+    albums.map(async (album) => {
+      if (album.assetCount === 0) return null;
+      
+      const assets = await MediaLibrary.getAssetsAsync({
+        album: album,
+        mediaType: [MediaLibrary.MediaType.photo],
+        first: 1,
+      });
+      
+      return assets.totalCount > 0 ? album : null;
+    })
+  );
+
+  return (albumsWithPhotos.filter(a => a !== null) as MediaLibrary.Album[])
+    .sort((a, b) => b.assetCount - a.assetCount);
 }
 
 /**
@@ -235,248 +350,280 @@ export async function getAllAlbumsWithAssets(): Promise<MediaLibrary.Album[]> {
  */
 export async function syncScreenshots(): Promise<number> {
   const hasPermission = await requestMediaPermission();
-  if (!hasPermission) {
-    //console.log("[ScreenVault] No permission, skipping sync");
-    return 0;
-  }
+  if (!hasPermission || isSyncing) return 0;
 
+  isSyncing = true;
   useAppStore.getState().setIsImporting(true);
+  let totalImported = 0;
 
   try {
-    // Check if a SAF folder is selected — if so, use SAF-based scanning
-    const safFolderUri = await AsyncStorage.getItem(SELECTED_FOLDER_URI_KEY);
-    if (safFolderUri) {
-      //console.log("[ScreenVault] Using SAF folder for sync:", safFolderUri);
-      const imported = await syncFromSAFFolder(safFolderUri);
-      await refreshUnprocessedCount();
-      return imported;
-    }
-
+    const sources = useAppStore.getState().monitorSources;
     const lastSyncStr = await AsyncStorage.getItem(LAST_SYNC_KEY);
     const lastSync = lastSyncStr ? parseInt(lastSyncStr, 10) : 0;
 
-    const album = await findScreenshotsAlbum();
+    const effectiveSources = [...sources];
+    // Removed autoDetectionEnabled check. We now only scan explicit sources.
 
-    let imported = 0;
-    let scannedAssets = 0;
-    let hasNextPage = true;
-    let endCursor: string | undefined;
+    // Use a Set to avoid duplicate syncs if manual selection overlaps with auto
+    const seenIds = new Set<string>();
+    // Use a Set for this sync run to avoid redundant DB checks within the same batch
+    const processedThisRun = new Set<string>();
 
-    while (hasNextPage) {
-      const queryOptions: MediaLibrary.AssetsOptions = {
-        first: 100,
-        after: endCursor,
-        sortBy: [MediaLibrary.SortBy.creationTime],
-      };
+    for (const source of effectiveSources) {
+      const sourceId = source.id || source.uri || "__auto__";
+      if (seenIds.has(sourceId)) continue;
+      seenIds.add(sourceId);
 
-      // If we found a screenshots album, only scan that
-      if (album) {
-        queryOptions.album = album;
-      }
-
-      // Only use createdAfter for incremental syncs, not first sync
-      if (lastSync > 0) {
-        queryOptions.createdAfter = lastSync;
-      }
-
-      const page = await MediaLibrary.getAssetsAsync(queryOptions);
-
-      // If we got 0 assets on the very first page, try with explicit mediaType as fallback
-      if (scannedAssets === 0 && page.assets.length === 0 && page.totalCount === 0 && !album) {
-        //console.log("[ScreenVault] No assets found without mediaType filter, trying with photo filter...");
-        const photoPage = await MediaLibrary.getAssetsAsync({
-          mediaType: MediaLibrary.MediaType.photo,
-          first: 5,
-          sortBy: [MediaLibrary.SortBy.creationTime],
-        });
-        //console.log(`[ScreenVault] Photo filter got ${photoPage.totalCount} total`);
-
-        // Try with mediaType "unknown" or just get everything
-        const allPage = await MediaLibrary.getAssetsAsync({
-          mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video, MediaLibrary.MediaType.audio, MediaLibrary.MediaType.unknown],
-          first: 5,
-          sortBy: [MediaLibrary.SortBy.creationTime],
-        });
-        //console.log(`[ScreenVault] All media types got ${allPage.totalCount} total`);
-        if (allPage.assets.length > 0) {
-          //console.log("[ScreenVault] === SAMPLE ALL MEDIA ===");
-          allPage.assets.forEach((a, i) => {
-            //console.log(`[ScreenVault]   [${i}] filename="${a.filename}" mediaType=${a.mediaType} uri="${a.uri}"`);
-          });
-        }
-      }
-
-      // Debug: log the first 5 assets of the first page so we can see filenames
-      if (scannedAssets === 0 && page.assets.length > 0) {
-        //console.log("[ScreenVault] === SAMPLE ASSETS ===");
-        page.assets.slice(0, 5).forEach((a, i) => {
-          //console.log(`[ScreenVault]   [${i}] filename="${a.filename}" uri="${a.uri}" id=${a.id}`);
-        });
-        //console.log("[ScreenVault] === END SAMPLE ===");
-      }
-
-      for (const asset of page.assets) {
-        scannedAssets++;
-        // If scanning a specific album, take everything. Otherwise filter by filename.
-        const shouldImport = album !== null || isLikelyScreenshot(asset);
-
-        if (shouldImport && asset.uri && asset.id) {
-          try {
-            const id = await importScreenshot({
-              mediaLibraryId: asset.id,
-              uri: asset.uri,
-              filename: asset.filename || "unknown_screenshot",
-              width: asset.width || 0,
-              height: asset.height || 0,
-              createdAt: asset.creationTime ? new Date(asset.creationTime).toISOString() : new Date().toISOString(),
-            });
-            if (id) imported++;
-          } catch (err) {
-            console.error(`[ScreenVault] Failed to import asset ${asset.id}:`, err);
+      if (source.type === "folder" && source.uri) {
+        // Real-time discovery and sync for folders
+        await syncFromSAFFolder(
+          source.uri, 
+          processedThisRun, 
+          !!source.recursive, 
+          false, 
+          undefined, 
+          async (batch) => {
+            const importedIds = await batchImportScreenshots(batch);
+            totalImported += importedIds.length;
           }
-        }
-      }
-
-      // Log progress every page
-      //console.log(`[ScreenVault] Scanned ${scannedAssets} assets so far, imported ${imported}`);
-
-      hasNextPage = page.hasNextPage;
-      endCursor = page.endCursor;
-
-      // Safety: limit to 5000 assets on first sync to avoid hanging
-      if (lastSync === 0 && scannedAssets >= 5000) {
-        //console.log("[ScreenVault] First sync limit reached (5000 assets), stopping");
-        break;
+        );
+      } else {
+        totalImported += await syncFromAlbum(source.id, lastSync, processedThisRun);
       }
     }
 
-    // Only update timestamp if we found anything OR if we already have a previous sync
-    // to avoid blacklisting valid past screenshots after a failed first-run perm check
-    if (imported > 0 || lastSync > 0) {
+    if (totalImported > 0 || lastSync > 0) {
       const now = Date.now();
       await AsyncStorage.setItem(LAST_SYNC_KEY, now.toString());
       useAppStore.getState().setLastSyncTimestamp(now);
-      //console.log("[ScreenVault] Updated last sync timestamp to:", now);
-    } else {
-      //console.log("[ScreenVault] No new screenshots found and no prior sync, NOT updating timestamp");
     }
 
     await refreshUnprocessedCount();
-    return imported;
+    return totalImported;
   } catch (error) {
-    console.error("[ScreenVault] Sync error details:", error);
+    console.error("[ScreenVault] Multi-source sync error:", error);
+    return 0;
+  } finally {
+    isSyncing = false;
+    useAppStore.getState().setIsImporting(false);
+  }
+}
+
+/**
+ * Directly imports pre-scanned screenshot data.
+ * Used to avoid re-scanning after a "Confirm Add" action.
+ */
+export async function importSourceData(data: ScreenshotImportData[]): Promise<number> {
+  if (!data || data.length === 0) return 0;
+  
+  try {
+    useAppStore.getState().setIsImporting(true);
+    const importedIds = await batchImportScreenshots(data);
+    
+    // Update last sync
+    const now = Date.now();
+    await AsyncStorage.setItem(LAST_SYNC_KEY, now.toString());
+    useAppStore.getState().setLastSyncTimestamp(now);
+    
+    await refreshUnprocessedCount();
+    return importedIds.length;
+  } catch (err) {
+    console.error("[ScreenVault] Direct import error:", err);
     return 0;
   } finally {
     useAppStore.getState().setIsImporting(false);
   }
 }
 
-/**
- * Reset sync state to force a full re-scan
- */
-export async function resetSyncState() {
-  await AsyncStorage.removeItem(LAST_SYNC_KEY);
-  useAppStore.getState().setLastSyncTimestamp(null);
-  //console.log("[ScreenVault] Sync state reset");
-}
-
-/**
- * Full rescan: reset timestamp + clear album selection + sync
- */
-export async function fullRescan(): Promise<number> {
-  //console.log("[ScreenVault] === STARTING FULL RESCAN ===");
-  await resetSyncState();
-  return syncScreenshots();
-}
-
-function isLikelyScreenshot(asset: MediaLibrary.Asset): boolean {
-  const name = (asset.filename || "").toLowerCase();
-  const uri = (asset.uri || "").toLowerCase();
-
-  const matchesName =
-    name.includes("screenshot") ||
-    name.includes("screen_shot") ||
-    name.includes("screen-shot") ||
-    name.includes("scrnshot") ||
-    name.includes("capture") ||
-    name.includes("img_") ||   // Samsung format: IMG_20240101_123456.jpg (could be generic, but URI might help)
-    name.includes("screen") || // Generic screen prefix
-    name.startsWith("s_") ||   // Xiaomi/POCO: S_20240101_...
-    name.startsWith("screenshot_");
-
-  const matchesPath =
-    uri.includes("/screenshots/") ||
-    uri.includes("/screen_shots/") ||
-    uri.includes("/screencaptures/") ||
-    uri.includes("/dcim/screenshots/") ||
-    uri.includes("/pictures/screenshots/");
-
-  return matchesName || matchesPath;
-}
-
-/**
- * Scan a SAF-granted directory for image files and import them.
- */
-async function syncFromSAFFolder(folderUri: string): Promise<number> {
+async function syncFromAlbum(
+  albumId: string | null, 
+  lastSync: number,
+  dedupeCache: Set<string>
+): Promise<number> {
   let imported = 0;
-  const lastSyncStr = await AsyncStorage.getItem(LAST_SYNC_KEY);
-  const lastSync = lastSyncStr ? parseInt(lastSyncStr, 10) : 0;
+  let scannedAssets = 0;
+  let hasNextPage = true;
+  let endCursor: string | undefined;
 
-  try {
-    const files = await StorageAccessFramework.readDirectoryAsync(folderUri);
-    //console.log(`[ScreenVault] SAF folder contains ${files.length} items`);
+  let targetAlbum: MediaLibrary.Album | null = null;
+  if (albumId) {
+    const all = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
+    targetAlbum = all.find(a => a.id === albumId) || null;
+  }
 
-    const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"];
+  const allToImport: ScreenshotImportData[] = [];
 
-    for (const fileUri of files) {
-      try {
-        // Filter to image files only
-        const decodedUri = decodeURIComponent(fileUri);
-        const filename = decodedUri.split("/").pop() || decodedUri.split("%2F").pop() || "unknown";
-        const ext = filename.toLowerCase().substring(filename.lastIndexOf("."));
+  while (hasNextPage) {
+    const page = await MediaLibrary.getAssetsAsync({
+      first: 200, // Increased for better batching
+      after: endCursor,
+      sortBy: [MediaLibrary.SortBy.creationTime],
+      album: targetAlbum || undefined,
+      mediaType: [MediaLibrary.MediaType.photo],
+      createdAfter: lastSync > 0 ? lastSync : undefined,
+    });
 
-        if (!imageExtensions.includes(ext)) continue;
-
-        // Get file info for modification date
-        const info = await LegacyFileSystem.getInfoAsync(fileUri);
-        if (!info.exists || info.isDirectory) continue;
-
-        // For incremental sync, skip files older than last sync
-        const modTime = (info as any).modificationTime;
-        if (lastSync > 0 && modTime && modTime * 1000 < lastSync) continue;
-
-        const id = await importScreenshot({
-          mediaLibraryId: fileUri, // Use the SAF URI as the unique ID
-          uri: fileUri,
-          filename: filename,
-          width: 0,  // SAF doesn't provide dimensions directly
-          height: 0,
-          createdAt: modTime ? new Date(modTime * 1000).toISOString() : new Date().toISOString(),
+    for (const asset of page.assets) {
+      scannedAssets++;
+      if (dedupeCache.has(asset.id)) continue;
+      
+      if (targetAlbum !== null) {
+        dedupeCache.add(asset.id);
+        allToImport.push({
+          mediaLibraryId: asset.id,
+          uri: asset.uri,
+          filename: asset.filename || "unknown",
+          width: asset.width || 0,
+          height: asset.height || 0,
+          createdAt: asset.creationTime ? new Date(asset.creationTime).toISOString() : new Date().toISOString(),
+          sourceId: albumId,
+          sourceType: "album",
         });
-        if (id) imported++;
-      } catch (fileErr) {
-        console.error(`[ScreenVault] Error processing SAF file:`, fileErr);
       }
     }
 
-    // Update sync timestamp
-    if (imported > 0 || lastSync > 0) {
-      const now = Date.now();
-      await AsyncStorage.setItem(LAST_SYNC_KEY, now.toString());
-      useAppStore.getState().setLastSyncTimestamp(now);
-      //console.log("[ScreenVault] SAF sync complete. Imported:", imported);
-    }
-  } catch (e) {
-    console.error("[ScreenVault] SAF folder sync error:", e);
+    hasNextPage = page.hasNextPage;
+    endCursor = page.endCursor;
+    if (lastSync === 0 && scannedAssets >= 5000) break;
+  }
+
+  if (allToImport.length > 0) {
+    const importedIds = await batchImportScreenshots(allToImport);
+    imported = importedIds.length;
   }
 
   return imported;
 }
 
+/**
+ * Scan a SAF-granted directory for image files and import them.
+ */
+async function syncFromSAFFolder(
+  folderUri: string,
+  dedupeCache: Set<string>,
+  recursive: boolean = false,
+  isPreview: boolean = false,
+  onProgress?: (count: number) => void,
+  onBatchFound?: (batch: ScreenshotImportData[]) => Promise<void>
+): Promise<ScreenshotImportData[]> {
+  const lastSyncStr = await AsyncStorage.getItem(LAST_SYNC_KEY);
+  const lastSync = lastSyncStr ? parseInt(lastSyncStr, 10) : 0;
+  const discovered: ScreenshotImportData[] = [];
+
+  try {
+    const processFolder = async (currentUri: string, isSub: boolean): Promise<void> => {
+      let files: string[];
+      try {
+        files = await StorageAccessFramework.readDirectoryAsync(currentUri);
+      } catch {
+        // If readDirectoryAsync fails, this URI is not a readable directory
+        return;
+      }
+      
+      // Stop recursion if the source is no longer marked as recursive during the walk
+      if (isSub && !isPreview) {
+        const sources = useAppStore.getState().monitorSources;
+        const currentSource = sources.find(s => s.uri === folderUri);
+        if (!currentSource || !currentSource.recursive) return;
+      }
+
+      const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"];
+
+      for (const fileUri of files) {
+        try {
+          // First, check if this item is a sub-directory by trying to read it
+          if (recursive) {
+            try {
+              const subFiles = await StorageAccessFramework.readDirectoryAsync(fileUri);
+              // If readDirectoryAsync succeeds, it's a directory — recurse into it
+              if (subFiles) {
+                // Respect "Scan Hidden Folders" toggle for directories too
+                const decodedDirUri = decodeURIComponent(fileUri);
+                const dirName = decodedDirUri.split("/").filter(Boolean).pop() || 
+                                decodedDirUri.split("%2F").filter(Boolean).pop() || "unknown";
+                
+                if (!useAppStore.getState().scanHiddenFolders && dirName.startsWith(".")) {
+                  // Skip hidden directory
+                } else {
+                  await processFolder(fileUri, true);
+                }
+                continue;
+              }
+            } catch {
+              // Not a directory, continue as a file
+            }
+          }
+
+          // Filter to image files only
+          const decodedUri = decodeURIComponent(fileUri);
+          const filename = decodedUri.split("/").pop() || decodedUri.split("%2F").pop() || "unknown";
+          
+          // Respect "Scan Hidden Folders" toggle
+          if (!useAppStore.getState().scanHiddenFolders && filename.startsWith(".")) {
+            continue;
+          }
+
+          const ext = filename.toLowerCase().substring(filename.lastIndexOf("."));
+
+          if (!imageExtensions.includes(ext)) continue;
+          if (dedupeCache.has(fileUri)) continue;
+
+          // Get file info for modification date
+          const info = await LegacyFileSystem.getInfoAsync(fileUri);
+          if (!info.exists) continue;
+
+          // For incremental sync, skip files older than last sync
+          const modTime = (info as any).modificationTime;
+          if (!isPreview && lastSync > 0 && modTime && modTime * 1000 < lastSync) continue;
+
+          dedupeCache.add(fileUri);
+          const item: ScreenshotImportData = {
+            mediaLibraryId: fileUri,
+            uri: fileUri,
+            filename: filename,
+            width: 0,
+            height: 0,
+            createdAt: modTime ? new Date(modTime * 1000).toISOString() : new Date().toISOString(),
+            sourceId: folderUri,
+            sourceType: "folder",
+            isSubfolder: isSub
+          };
+          discovered.push(item);
+          
+          if (onProgress) {
+            onProgress(discovered.length);
+          }
+        } catch (fileErr) {
+          console.error(`[ScreenVault] Error processing SAF file:`, fileErr);
+        }
+      }
+    };
+
+    await processFolder(folderUri, false);
+
+    // Import all discovered files in one shot (not 50-at-a-time)
+    if (!isPreview && onBatchFound && discovered.length > 0) {
+      await onBatchFound(discovered);
+    }
+    
+    // Update sync timestamp if we found anything (or even if we didn't, to mark the run)
+    if (!isPreview && (discovered.length > 0 || lastSync > 0)) {
+      const now = Date.now();
+      await AsyncStorage.setItem(LAST_SYNC_KEY, now.toString());
+      useAppStore.getState().setLastSyncTimestamp(now);
+    }
+  } catch (e) {
+    console.error("[ScreenVault] SAF folder sync error:", e);
+  }
+
+  return discovered;
+}
+
 export async function refreshUnprocessedCount(): Promise<void> {
   const unprocessed = await getUnprocessedScreenshots();
   useAppStore.getState().setUnprocessedCount(unprocessed.length);
-  //console.log("[ScreenVault] Unprocessed count:", unprocessed.length);
+  // Trigger a store refresh for components listening to revision
+  useAppStore.getState().notifyDatabaseChange();
 }
 
 export async function scheduleDailyNudge() {

@@ -1,5 +1,6 @@
 import { BottomSheetModal } from "@/components/ui/bottom-sheet-modal";
 import { Button } from "@/components/ui/button";
+import { ConfirmationModal } from "@/components/ui/confirmation-modal";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Text } from "@/components/ui/text";
@@ -15,11 +16,13 @@ import {
   type FolderRow,
   type TagRow,
 } from "@/lib/database";
+import { exportAllToDevice, exportFolderToDevice } from "@/lib/file-organizer";
 import { useAppStore } from "@/lib/store";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
+  Download,
   FolderOpen,
   FolderPlus,
   Plus,
@@ -52,6 +55,9 @@ export default function FoldersScreen() {
   const [newTagName, setNewTagName] = useState("");
   const [selectedColor, setSelectedColor] = useState(FOLDER_COLORS[0]);
   const [folderPreviews, setFolderPreviews] = useState<Record<number, string | null>>({});
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState<number | null>(null);
+  const [confirmDeleteTag, setConfirmDeleteTag] = useState<number | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const router = useRouter();
   const theme = useAppStore((s) => s.theme);
   const dbRevision = useAppStore((s) => s.databaseRevision);
@@ -130,11 +136,41 @@ export default function FoldersScreen() {
       <View className="px-6 pt-2 pb-4 flex-row items-center justify-between">
         <View>
           <Text className="text-black dark:text-white text-2xl font-bold">Folders</Text>
-          <Text className="text-surface-500 dark:text-surface-300 text-sm mt-1">
+          <Text className="text-surface-500 dark:text-white text-sm mt-1">
             {folders.length} folder{folders.length !== 1 ? "s" : ""} • {tags.length} tag{tags.length !== 1 ? "s" : ""}
           </Text>
         </View>
         <View className="flex-row items-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            onPress={async () => {
+              if (folders.length === 0) {
+                Alert.alert("No Folders", "Create folders and organize screenshots first.");
+                return;
+              }
+              setIsExporting(true);
+              try {
+                const result = await exportAllToDevice((exported, total, folder) => {
+                  // Progress callback - could update UI
+                });
+                if (result.exported > 0) {
+                  Alert.alert(
+                    "Export Complete",
+                    `Exported ${result.exported} screenshots across ${result.folders} folders.${result.errors > 0 ? ` (${result.errors} failed)` : ''}`
+                  );
+                }
+              } catch (err) {
+                Alert.alert("Export Error", "Failed to export files.");
+              } finally {
+                setIsExporting(false);
+              }
+            }}
+            disabled={isExporting}
+            className="rounded-xl border-surface-200 dark:border-surface-700 h-11 w-11"
+          >
+            <Icon as={Download} className="text-muted-foreground" size={20} strokeWidth={2} />
+          </Button>
           <Button
             variant="outline"
             size="icon"
@@ -165,7 +201,7 @@ export default function FoldersScreen() {
             <View className="w-20 h-20 rounded-3xl bg-surface-100 dark:bg-surface-800 items-center justify-center mb-4">
               <Icon as={FolderOpen} className="text-muted-foreground" size={36} strokeWidth={1.5} />
             </View>
-            <Text className="text-surface-500 dark:text-surface-300 text-base text-center">
+            <Text className="text-surface-500 dark:text-white text-base text-center">
               No folders yet.{"\n"}Create one to start organizing!
             </Text>
           </View>
@@ -210,7 +246,7 @@ export default function FoldersScreen() {
                       {folder.name}
                     </Text>
                   </View>
-                  <Text className="text-surface-500 dark:text-surface-300 text-xs mt-1">
+                  <Text className="text-surface-500 dark:text-white text-xs mt-1">
                     {folder.screenshotCount} item{folder.screenshotCount !== 1 ? "s" : ""}
                   </Text>
                 </View>
@@ -237,7 +273,7 @@ export default function FoldersScreen() {
             className="mb-4 h-12 rounded-xl text-base"
           />
 
-          <Text className="text-surface-500 dark:text-surface-300 text-sm mb-3 font-semibold">
+          <Text className="text-surface-500 dark:text-white text-sm mb-3 font-semibold">
             Color
           </Text>
           <View className="flex-row flex-wrap gap-3 mb-8">
@@ -271,16 +307,41 @@ export default function FoldersScreen() {
               <Button
                 variant="outline"
                 size="lg"
-                onPress={() => {
-                  Alert.alert(
-                    "Delete Folder",
-                    `Are you sure you want to delete "${editingFolder.name}"? Screenshots will be moved back to Inbox.`,
-                    [
-                      { text: "Cancel", style: "cancel" },
-                      { text: "Delete", style: "destructive", onPress: () => handleDelete(editingFolder.id) }
-                    ]
-                  );
+                onPress={async () => {
+                  if (!editingFolder) return;
+                  setIsExporting(true);
+                  try {
+                    const result = await exportFolderToDevice(
+                      editingFolder.id,
+                      editingFolder.name
+                    );
+                    if (result.exported > 0) {
+                      Alert.alert(
+                        "Export Complete",
+                        `Exported ${result.exported} screenshots.${result.errors > 0 ? ` (${result.errors} failed)` : ''}`
+                      );
+                    }
+                  } catch (err) {
+                    Alert.alert("Export Error", "Failed to export files.");
+                  } finally {
+                    setIsExporting(false);
+                  }
                 }}
+                disabled={isExporting}
+                className="rounded-xl py-3.5 h-auto border-primary-200 dark:border-primary-700 flex-row gap-2"
+              >
+                <Icon as={Download} className="text-primary-600" size={18} strokeWidth={2} />
+                <Text className="text-primary-600 dark:text-primary-400 font-bold text-base">
+                  {isExporting ? "Exporting..." : "Export to Device"}
+                </Text>
+              </Button>
+            )}
+
+            {editingFolder && (
+              <Button
+                variant="outline"
+                size="lg"
+                onPress={() => setConfirmDeleteFolder(editingFolder.id)}
                 className="rounded-xl py-3.5 h-auto border-accent-red/20 flex-row gap-2"
               >
                 <Icon as={Trash2} className="text-destructive" size={18} strokeWidth={2} />
@@ -309,14 +370,14 @@ export default function FoldersScreen() {
               onPress={handleCreateTag}
               className="w-12 h-12 items-center justify-center rounded-xl p-0"
             >
-              <Icon as={Plus} className="text-white" size={24} strokeWidth={2.5} />
+              <Icon as={Plus} className="text-white dark:text-black" size={24} strokeWidth={2.5} />
             </Button>
           </View>
 
           <ScrollView className="max-h-64">
             <View className="flex-row flex-wrap gap-2">
               {tags.length === 0 ? (
-                <Text className="text-surface-500 dark:text-surface-300 text-sm italic py-4">No tags created yet.</Text>
+                <Text className="text-surface-500 dark:text-white text-sm italic py-4">No tags created yet.</Text>
               ) : (
                 tags.map((tag) => (
                   <View
@@ -327,7 +388,7 @@ export default function FoldersScreen() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onPress={() => handleDeleteTag(tag.id)}
+                      onPress={() => setConfirmDeleteTag(tag.id)}
                       className="h-7 w-7 rounded-full p-0"
                     >
                       <Icon as={X} className="text-muted-foreground" size={12} strokeWidth={2.5} />
@@ -339,6 +400,25 @@ export default function FoldersScreen() {
           </ScrollView>
         </View>
       </BottomSheetModal>
+
+      {/* Confirmation Modals */}
+      <ConfirmationModal
+        visible={confirmDeleteFolder !== null}
+        onClose={() => setConfirmDeleteFolder(null)}
+        onConfirm={() => confirmDeleteFolder && handleDelete(confirmDeleteFolder)}
+        title="Delete Folder"
+        message={`Are you sure you want to delete "${editingFolder?.name}"? Screenshots will be moved back to Inbox.`}
+        confirmLabel="Delete"
+      />
+
+      <ConfirmationModal
+        visible={confirmDeleteTag !== null}
+        onClose={() => setConfirmDeleteTag(null)}
+        onConfirm={() => confirmDeleteTag && handleDeleteTag(confirmDeleteTag)}
+        title="Delete Tag"
+        message="Are you sure you want to delete this tag? It will be removed from all screenshots."
+        confirmLabel="Delete"
+      />
     </SafeAreaView>
   );
 }

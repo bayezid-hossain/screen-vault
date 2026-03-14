@@ -1,22 +1,21 @@
-import { useState, useCallback } from "react";
-import { View, ScrollView } from "react-native";
 import { Icon } from "@/components/ui/icon";
 import { Text } from "@/components/ui/text";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { getScreenshotsByDate, getStats, type ScreenshotRow } from "@/lib/database";
+import { useAppStore } from "@/lib/store";
+import { cn, formatNumber } from "@/lib/utils";
+import { useFocusEffect } from "expo-router";
 import {
+  CalendarDays,
   Camera,
   FolderCheck,
-  Trash2,
   Heart,
-  TrendingUp,
-  CalendarDays,
   Sparkles,
+  Trash2,
+  TrendingUp,
 } from "lucide-react-native";
-import { getStats, getScreenshotsByDate, type ScreenshotRow } from "@/lib/database";
-import { formatNumber } from "@/lib/utils";
-import { cn } from "@/lib/utils";
-import { useFocusEffect } from "expo-router";
-import { useAppStore } from "@/lib/store";
+import { useCallback, useState } from "react";
+import { ScrollView, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 type Stats = {
   total: number;
@@ -53,7 +52,7 @@ export default function StatsScreen() {
     return (
       <SafeAreaView className="flex-1 bg-white dark:bg-surface-950 items-center justify-center">
         <Icon as={Sparkles} className="text-primary-500" size={32} />
-        <Text className="text-surface-600 dark:text-surface-300 mt-4">Loading stats...</Text>
+        <Text className="text-surface-600 dark:text-white mt-4">Loading stats...</Text>
       </SafeAreaView>
     );
   }
@@ -62,7 +61,7 @@ export default function StatsScreen() {
     <SafeAreaView className="flex-1 bg-white dark:bg-surface-950">
       <ScrollView className="flex-1 px-6 pt-2" contentContainerStyle={{ paddingBottom: 100 }}>
         <Text className="text-black dark:text-white text-2xl font-bold mb-1">Statistics</Text>
-        <Text className="text-surface-500 dark:text-surface-300 text-sm mb-6">Your screenshot habits at a glance</Text>
+        <Text className="text-surface-500 dark:text-white text-sm mb-6">Your screenshot habits at a glance</Text>
 
         {/* Summary Cards */}
         <View className="flex-row gap-3 mb-4">
@@ -105,7 +104,7 @@ export default function StatsScreen() {
               <Text className="text-4xl font-bold text-black dark:text-white">
                 {Math.round((stats.organized / stats.total) * 100)}%
               </Text>
-              <Text className="text-surface-500 dark:text-surface-300 text-sm mt-1">
+              <Text className="text-surface-500 dark:text-white text-sm mt-1">
                 of screenshots organized into folders
               </Text>
               {/* Progress bar */}
@@ -119,7 +118,7 @@ export default function StatsScreen() {
               </View>
             </>
           ) : (
-            <Text className="text-surface-500 dark:text-surface-300 text-sm">
+            <Text className="text-surface-500 dark:text-white text-sm">
               Take some screenshots to see your stats!
             </Text>
           )}
@@ -136,7 +135,7 @@ export default function StatsScreen() {
           {heatmapData.length > 0 ? (
             <HeatmapCalendar data={heatmapData} isDark={isDark} />
           ) : (
-            <Text className="text-surface-500 dark:text-surface-300 text-sm text-center py-4">
+            <Text className="text-surface-500 dark:text-white text-sm text-center py-4">
               No activity data yet
             </Text>
           )}
@@ -168,7 +167,7 @@ function StatCard({
         {icon}
       </View>
       <Text className="text-surface-900 dark:text-white text-2xl font-bold">{formatNumber(value)}</Text>
-      <Text className="text-surface-600 dark:text-surface-300 text-xs mt-1">{label}</Text>
+      <Text className="text-surface-600 dark:text-white text-xs mt-1">{label}</Text>
     </View>
   );
 }
@@ -176,7 +175,7 @@ function StatCard({
 function QuickStat({ label, value }: { label: string; value: string }) {
   return (
     <View className="flex-row items-center justify-between py-2.5 border-b border-surface-100 dark:border-surface-700 last:border-b-0">
-      <Text className="text-surface-600 dark:text-surface-300 text-sm">{label}</Text>
+      <Text className="text-surface-600 dark:text-white text-sm">{label}</Text>
       <Text className="text-surface-900 dark:text-white font-semibold">{value}</Text>
     </View>
   );
