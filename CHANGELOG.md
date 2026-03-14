@@ -4,6 +4,8 @@ All notable changes to ScreenVault will be documented in this file.
 
 ## [Unreleased]
 
+## [v1.0.1] - 2026-03-14
+
 ### Fix
 - Path view is the default view now!
 
